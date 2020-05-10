@@ -6,6 +6,7 @@
 #include <fstream>
 #include <chrono>
 #include <string>
+#include <thread>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -14,17 +15,23 @@
 #include <limits.h>
 #include <sys/inotify.h>
 #endif
-//#include "AES.h" NOT USED RIGHT NOW
+//#include "AES.h" NOT USED RIGHT NOW. TODO Encrypted http requests
 
-
-// Exe file should be placed in Servers SaveGame folder
-// Location of UE4 .sav file for a custom skirmish server (relative to exe)
+// This program working directory should be the Servers SaveGame folder
+// Location of UE4 .sav file for a custom skirmish server (relative to programs working directory)
 #define LOG_PATH "\\CustomSkirmish\\LastLog"
 #define LOG_FILENAME "LastMatchLog.sav"
 
+// Location of the file that Custom Skirmish mod checks for custom whitelist and which this program provides
+// Mod rewrites it whenever map starts which triggers function that sends http request to server for current whitelist
+#define SKIRMISH_WHITELIST_PATH "\\CustomSkirmish\\Whitelist"
+#define SKIRMISH_WHITELIST_FILENAME "Whitelist.sav"
+
 // Location of UE4 .sav file for a lobby server (relative to exe)
-#define LOBBY_INTERFACE_PATH "\\Skalagrad"
-#define LOBBY_INTERFACE_FILENAME "Interface.sav"
+#define LOBBY_INTERFACE_MOD_OUTPUT_PATH "\\Skalagrad\\ModOutput"
+#define LOBBY_INTERFACE_MOD_INPUT_PATH "\\Skalagrad\\ModInput"
+#define LOBBY_INTERFACE_MOD_OUTPUT_FILENAME "InterfaceModOutput.sav" // File that is changed by Mordhau lobby mod and moniotered here
+#define LOBBY_INTERFACE_MOD_INPUT_FILENAME "InterfaceModInput.sav" // File that is changed here and monitored by Mordhau lobby mod
 
 // Used to mark extractable string in UE4 .sav files
 #define EXTRACT_FIRST_LINE "STARTMATCHINFOSTRING"
@@ -37,29 +44,57 @@
 // Time to wait for file change completion after first time system hook was triggered
 #define ACTION_DELAY 100
 
+// A string that is provided by user on program start that is used to identify this Mordhau server by Skalagrad site
+// No actual validity check on program side exists right now ( TODO Server identifier check? )
+std::string ServerIdentifier("");
+
 // Function that contains actions for log collection (extracting JSON string from UE4 .sav file and sending it to server)
 bool OnChangeActionLog();
 // Function that contains actions for interpreting changes in lobby .sav file and interfacing with the server
-bool OnChangeActionLobbyInterface();
+bool OnChangeActionLobbymodOutput();
+// Pools data from Skalagrad site and updates mod input UE4 .sav accordingly
+bool PoolingIteration();
+// Whenever skirmish map starts mod rewrites whitelist UE4 .sav file so program can trigger and pool info into it from Skalagrad site
+bool OnChangeWhitelist();
+// Loop function that calls given function, waits X seconds and repeats
+void RepeatLoop(bool(*FunctionToCall)(), int Seconds);
 // System-dependent loop function that calls given function whenever there are changes in provided directory path
-void ListenerLoop(bool(*OnChangeAction)(), std::string AbsolutePath);
-// System-dependent function that returns path to the exe working directory
+void ListenerLoop(bool(*OnChangeAction)(), std::string const& AbsolutePath); // TODO fix: will silently break if no such folder
+// System-dependent function that returns path to the program working directory
 std::string ExePath();
-//AES aes(256); NOT USED RIGHT NOW
+
 
 int main() {
-	std::string AbsoluteLogDirectoryPath = ExePath() + LOG_PATH;
-	std::cout << "Started monitoring MORDHAU log changes in:" << std::endl;
-	std::cout << AbsoluteLogDirectoryPath << std::endl;
+	std::string WorkingDirectory(ExePath());
+	std::string AbsoluteLogDirectoryPath(WorkingDirectory + LOG_PATH);
+	std::string AbsoluteLobbyOutDirectoryPath(WorkingDirectory + LOBBY_INTERFACE_MOD_OUTPUT_PATH);
+	std::string AbsoluteWhitelistDirectoryPath(WorkingDirectory + SKIRMISH_WHITELIST_PATH);
+
+	std::cout << "Enter server identifier:" << std::endl;
+	std::cin >> ServerIdentifier;
+
+	std::cout << "Started monitoring from:" << std::endl;
+	std::cout << WorkingDirectory << std::endl;
+
 	// Start Monitoring for new logs
-	ListenerLoop(OnChangeActionLog, AbsoluteLogDirectoryPath);
+	std::thread MatchLogThread (ListenerLoop, OnChangeActionLog, AbsoluteLogDirectoryPath);
+
+	// Start Monitoring lobby UE4 .sav
+	std::thread LobbyInterfaceThread (ListenerLoop, OnChangeActionLobbymodOutput, AbsoluteLobbyOutDirectoryPath);
+
+	// Start Monitoring whitelist folder
+	std::thread SkirmishWhitelistThread (ListenerLoop, OnChangeWhitelist, AbsoluteWhitelistDirectoryPath);
+
+	// Start pooling info from Skalagrad site
+	std::thread InfoPoolingThread (RepeatLoop, PoolingIteration, 5);
+
+	MatchLogThread.join();
 }
 
-std::string ReadLogFile() {
+std::string GetStringFromSav(std::string const& filepath) {
 	std::string line;
 	std::string outputString;
-	std::string AbsoluteLogFilePath = ExePath() + LOG_PATH + "\\" + LOG_FILENAME;
-	std::ifstream saveFile(AbsoluteLogFilePath, std::ios::binary);
+	std::ifstream saveFile(filepath, std::ios::binary);
 	//std::cout << logfilename << std::endl;
 	bool isMatchInfo = false;
 	size_t found;
@@ -83,7 +118,11 @@ std::string ReadLogFile() {
 	return outputString;
 }
 
-void SendLog(std::string Log) {
+void LoadSav(std::string const& filename, std::vector<std::string>& dest) {
+
+}
+
+void SendLog(std::string const& Log) {
 	
 	try {
 		http::Request request(SERVER_IP);
@@ -99,8 +138,8 @@ void SendLog(std::string Log) {
 }
 
 bool OnChangeActionLog() {
-	std::chrono::milliseconds(ACTION_DELAY);
-	std::string outputString = ReadLogFile();
+	std::this_thread::sleep_for(std::chrono::milliseconds(ACTION_DELAY));
+	std::string outputString = GetStringFromSav(ExePath() + LOG_PATH + "\\" + LOG_FILENAME);
 	//std::remove(logfilename.c_str()); Now mordhau mod removes logs by itself
 	if (outputString.length() > 0) {
 		std::cout << "New log!" << std::endl;
@@ -110,17 +149,36 @@ bool OnChangeActionLog() {
 	else {
 		return false;
 	}
+}
 
-	/*unsigned char plain[200000];
-	std::copy(outputString.begin(), outputString.end(), plain);
-	unsigned int outputlen = outputString.length();
-	plain[outputlen] = 0;
-	unsigned char key[] = "H+MbQeThWmZq4t7w!z%C*F-JaNcRfUjX";
-	unsigned int bytesize = outputlen * sizeof(unsigned char);
-	unsigned int len = 0;
-	unsigned char *out = aes.EncryptECB(plain, bytesize, key, len);
-	unsigned char *innew = aes.DecryptECB(out, bytesize, key);
-	std::cout << innew << std::endl;*/
+bool OnChangeActionLobbymodOutput() {
+	std::this_thread::sleep_for(std::chrono::milliseconds(ACTION_DELAY));
+	std::string outputString = GetStringFromSav(ExePath() + LOBBY_INTERFACE_MOD_OUTPUT_PATH + "\\" + LOBBY_INTERFACE_MOD_OUTPUT_FILENAME);
+	if (outputString.length() > 0) {
+		// doing stuff
+		return true;
+	}
+	else {
+		return false;
+	}
+}
+
+bool OnChangeWhitelist() {
+	std::this_thread::sleep_for(std::chrono::milliseconds(ACTION_DELAY));
+	std::string outputString = GetStringFromSav(ExePath() + SKIRMISH_WHITELIST_PATH + "\\" + SKIRMISH_WHITELIST_FILENAME);
+	if (outputString.length() > 0) {
+		// doing stuff
+		return true;
+	}
+	else {
+		return false;
+	}
+}
+
+bool PoolingIteration() {
+	// make http request and get info block
+
+	return false;
 }
 
 std::string ExePath() {
@@ -137,7 +195,14 @@ std::string ExePath() {
 	return std::string(buffer).substr(0, pos);
 }
 
-void ListenerLoop(bool(*OnChangeAction)(), std::string AbsolutePath)
+void RepeatLoop(bool(*FunctionToCall)(), int Seconds) {
+	for (;;) {
+		FunctionToCall();
+		std::this_thread::sleep_for(std::chrono::seconds(Seconds));
+	}
+}
+
+void ListenerLoop(bool(*OnChangeAction)(), std::string const& AbsolutePath)
 {	
 #ifdef _WIN32
 	const char* absolutePathP = AbsolutePath.c_str();
