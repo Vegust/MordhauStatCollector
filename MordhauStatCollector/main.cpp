@@ -37,8 +37,7 @@
 #define EXTRACT_FIRST_LINE "STARTMATCHINFOSTRING"
 #define EXTRACT_LAST_LINE "ENDMATCHINFOSTRING"
 
-// DAWASTI's server is 81.169.241.157:8081
-// Webhook.site for testing is http://webhook.site/73902a10-1240-438b-8391-2f4fbdfa0b8a
+// Server ip (can use webhook.site to test but you should not use secure http)
 #define SERVER_IP "http://webhook.site/73902a10-1240-438b-8391-2f4fbdfa0b8a"
 
 // Time to wait for file change completion after first time system hook was triggered
