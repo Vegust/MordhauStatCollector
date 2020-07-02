@@ -1,7 +1,8 @@
 # MordhauStatCollector
 Program to connect Mordhau mods to Skalagrad site
 
-Should be run server-side to interface with Custom Skirmish Mod.
+Theoretically, should be run server-side to interface with Custom Skirmish Mod.
+Realistically, its just to see how that can be done.
 https://github.com/Vegust/MordhauCustomSkirmish
 https://mordhau.mod.io/custom-skirmish
 
